@@ -7,6 +7,12 @@
     - each Message class has two modes - binary and nonbinary
     - each Message class has two posses two methods that will enable the
     encoding and decoding from these two modes
+    - Message classes have defined maximum sizes of messages
+
+    FUTURE:
+    - add persisting stuff - possibly as a mixing, messages have to be
+    persisted for state-saving purposes
+    - add id stuff - for identification of messages
 """
 
 from iris.errors import (MessageInitError, MessageEncodingError,
@@ -14,16 +20,49 @@ from iris.errors import (MessageInitError, MessageEncodingError,
 from iris import utils
 
 
-class Message:
+class BaseMessage:
     """ Base class of Message class hierarchy.
 
-        Contains basic text strings as payload, with staticmethods
-        offering basic encoding and decoding of the payload """
+        Gives the overall skeleton which has to be inherited. """
 
     NONBINARY = 0
     BINARY = 1
 
-    PAYLOAD_SIZE = 1500
+
+    @staticmethod
+    def to_binary(message):
+        raise NotImplementedError
+
+    @staticmethod
+    def from_binary(message):
+        raise NotImplementedError
+
+    def __init__(self, payload, host, port):
+        if not utils.is_valid_address(host, port):
+            raise MessageInitError("Invalid address %s:%s was provided"
+                                   % (str(host, str(port))))
+        if not payload:
+            raise MessageInitError("Cannot initialize without payload!")
+        if type(payload) == bytes:
+            self._init_binary(payload, host, port)
+        else:
+            self._init_nonbinary(payload, host, port)
+
+    def _init_binary(self, payload, host, port):
+        raise NotImplementedError
+
+    def _init_nonbinary(self, payload, host, port):
+        raise NotImplementedError
+
+
+class TextMessage:
+    """ Base class of Message class sub-hierarchy that uses text payload.
+
+        Contains basic text strings as payload, with static methods
+        offering basic encoding and decoding of the payload """
+
+    PAYLOAD_SIZE_BINARY = 1500
+
 
     @staticmethod
     def to_binary(message):
@@ -62,21 +101,16 @@ class Message:
         else:
             raise MessageDecodingError("Message must be in BINARY mode")
 
-    def __init__(self, payload, host, port):
-        """ Initializes the Message object. Based on the type of payload,
-            sets mode to BINARY or NONBINARY. """
-        if not utils.is_valid_address(host, port):
-            raise MessageInitError("Can not initialize Message with host: %s"
-                                   " and port: %d" % (host, port))
-        if not payload:
-            raise MessageInitError("Can not initialize Message with payload %s"
-                                   % payload)
-        if isinstance(payload, bytes):
-            self.mode = Message.BINARY
-        elif isinstance(payload, str):
-            self.mode = Message.NONBINARY
-        else:
-            raise MessageInitError("Can not initialize Message with payload of"
-                                   "type %s" % str(type(payload)))
+    def _init_binary(self, payload, host, port):
         self.payload = payload
         self.address = host, port
+        self.mode = self.BINARY
+
+    def _init_nonbinary(self, payload, host, port):
+        if type(payload) == str:
+            self.payload = payload
+            self.address = host, port
+            self.mode = self.NONBINARY
+        else:
+            raise MessageInitError("Nonbinary TextMessages must have payload"
+                                   " of str type not: %s" % str(type(payload)))
