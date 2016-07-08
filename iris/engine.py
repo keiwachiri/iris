@@ -175,3 +175,167 @@ class BaseUDPEngine(BaseEngine):
         else:
             raise EngineMsgDestError("Message destination must provide the "
                                      "add_message method as interface")
+
+
+class SequentialUDPEngine(BaseUDPEngine):
+    """ Sequential implementation of the UDPEngine. This is a very inefficient
+        class, should not be used in any serious application, but purely
+        for educational/fun purposes """
+
+    def start(self):
+        """ Responsible to set the SequentialUDPEngine running.
+            Sets the _run_flag and invokes the run operation.
+
+            Can only be called from CREATED or STOPPED state. """
+        if self.status in (self.CREATED, self.STOPPED):
+            self._run_flag = True
+            self._run()
+        else:
+            raise EngineStartError("Can only be started when status is set to"
+                                   " CREATED or STOPPED")
+
+    def _run(self):
+        """ Method responsible for performing the main functionaity of the
+            application, that is, for performing the sending and receiving of
+            messages.
+
+            Can only be invoked when the _rcv_flag is set to True. Sets the
+            status to RUNNING, and loops while _rcv_flag is True. After being
+            done sets the status to STOPPED """
+        if self._run_flag:
+            self.status = self.RUNNING
+            while self._run_flag:
+                self._send()
+                self._receive()
+            else:
+                self.status = self.STOPPED
+        else:
+            raise EngineRunError("Cannot call _run method without _run_flag")
+
+    def stop(self):
+        """ Uses _run_flag to signal _run to stop running.
+
+            Waits until the status is set to STOPPED and then returns """
+        if self.status == self.RUNNING:
+            self._run_flag = False
+            while not self.status == self.STOPPED:
+                time.sleep(0.001)
+        else:
+            raise EngineStopError("Cannot invoke stop when status not RUNNING")
+
+    def shutdown(self):
+        """ If status is STOPPED or CREATED, it proceeds to shut down otherwise
+            it invokes the stop method first """
+        if self.status == self.RUNNING:
+            self.stop()
+        if self.status in (self.STOPPED, self.CREATED):
+            self._listen_endp.close()
+            self._send_endp.close()
+            self.status = self.SHUTDOWN
+        else:
+            raise EngineShutdownError("Invalid status: Engine Status %s"
+                                      % self.status)
+
+    def _configure_listen_endpoint(self, listen_endpoint):
+        """ Required so that the receiving doesn't stop the entire Engine """
+        listen_endpoint.setblocking(False)
+
+    # sending-related methods
+    def _send(self):
+        msg = self._out_source.get_message()
+        if msg:
+            try:
+                self._send_message(msg)
+            except EngineSendError as e:
+                raise e  # TODO - log here
+
+    def _send_message(self, message):
+        try:
+            self._send_payload(payload=msg.payload, address=msg.address)
+        except Exception as e:
+            raise e
+
+    def _send_payload(self, payload, address):
+        try:
+            self._send_endp.sendto(payload, address)
+        except socket.gaierror as e:
+            raise EngineSendError("Cannot find such address: ",
+                                  str(address)) from e
+        except OSError as e:
+            raise EngineSendError("Failed to send message payload: %s"
+                                  % payload) from e
+
+    # receiving-related methods
+    def _receive(self):
+        message = self._receive_message()
+        if message:
+            self._inc_dest.add_message(new_message)
+        else:
+            pass # TODO - log
+
+    def _receive_message(self):
+        payload, addr = self._receive_data()
+        if payload:
+            try:
+                new_message = self._inc_dest.msg_class(payload=payload,
+                                                       addr=addr)
+            except MessageInitError as e:
+                pass # TODO - log here
+            else:
+                return new_message
+
+    def _receive_data(self):
+        try:
+            payload, addr = self._listen_endp.recvfrom(1500) # TODO - msg size
+        except BlockingIOError:
+            return (None, None)
+
+
+class ThreadedUDPEngine(BaseUDPEngine):
+    """ Implementation of UDPEngine which works by creating separate threads
+        for sending and receiving functionalities """
+
+    def _run(self):
+        """ Run starts two separate threads for sending and receiving of
+            messages and loops until the run_flag is set to False, when it
+            waits for sending and receiving to finish """
+        if self._run_flag:
+            rcv_thread = Thread(target=self._receiving,
+                                name='Engine-Receiving')
+            send_thread = Thread(target=self._sending,
+                                 name='Engine-Sending')
+            self._send_flag = True
+            self._rcv_flag = True
+            send_thread.start()
+            rcv_thread.start()
+            self.status = self.RUNNING
+            while self._run_flag:
+                time.sleep(0.001)
+            else:
+                self._send_flag = False
+                self._rcv_flag = False
+                send_thread.join()
+                rcv_thread.join()
+                self.status = self.STOPPED
+        else:
+            raise EngineRunError("Cannot call _run_method without _run_flag")
+
+    def _receiving(self):
+        """ Communicates with outer world via _rcv_flag. Calls the _receive
+            until flag is set to False, then it exits """
+        if self._rcv_flag:
+            while self._rcv_flag:
+                self._receive()
+        else:
+            raise EngineFlagError("_receiving can only be called when the "
+                                  "_rcv_flag is set to True")
+
+    def _sending(self):
+        """ Communicates with outer world via _send_flag. Calls the _send
+            until flag is set to False, then it exits. """
+        if self._send_flag:
+            while self._send_flag:
+                self._send()
+        else:
+            raise EngineFlagError("_sending can only be called when the "
+                                  "_send_flag is set to True beforehand")
